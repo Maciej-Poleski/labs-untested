@@ -1,0 +1,210 @@
+This pack consists of all scripts (final) developed during semester, all data sets (final) created from initial dump, one databse schema (latest) and a few auxiliary files/tools used for raw data processing.
+
+One mistake I made at the very beginning was assuming incremental updates to database schema dump file. As it turned out only "latest" data set can be created from database dump. One workaround is to have look at git history - all neccessary changes vere eventually commited at some point (updating schema). Another (easier) - I attached all data sets (and also all (final) intermediate forms) to this pack.
+
+As simple metric comparing quality of results between different models I used .score() method available for all SciKit modules:
+"defined as (1 - u/v), where u is the regression sum of squares ((y_true - y_pred) ** 2).sum() and v is the residual sum of squares ((y_true - y_true.mean()) ** 2).sum(). Best possible score is 1.0 and it can be negative (because the model can be arbitrarily worse). A constant model that always predicts the expected value of y, disregarding the input features, would get 0.0."
+XGBoost (seemingly) doesn't have such evaluative method so I implemented my own according to above specification.
+
+
+Below is description of each script in chronological order. At the end my final thought and remarks about the project, my approach, ...
+
+ - database/scheme.sql
+
+Database schema. Can be imported in 3 steps:
+1. Import schema
+2. Import data dumps into appropriate tables
+3. Refresh all views.
+
+ - scripts/liczba_uzytkownikow.sql
+
+Counts total number of users.
+
+ - scripts/users_5000_month.sql
+
+Users who spent at least 5000 during first month since sign up.
+
+ -  Maciej-Poleski/scripts/users_5000_month_join.sql
+
+The same as above but using join query instead of subquery.
+
+ -  Maciej-Poleski/scripts/users_firstAction.sql
+
+First action of user is not necessary sign up - it can also be transaction.
+
+ -  Maciej-Poleski/scripts/users_firstBuy.sql
+
+Compute time of first buy for each user (may be null - no transaction).
+
+ - scripts/users_month.sql
+
+Cash spent during first month since sign up for each user.
+
+ -  scripts/users_register_revenue.sql
+
+The same as above + cash spent during first week.
+
+ -  scripts/users_properties
+
+Sketch of first data set:
+- userId
+- utmContent
+- first_action (buy or register)
+- first_buy
+- revenue in 7 days
+- revenue in 30 days
+
+ - model/simple.py
+ - model/ridge.py
+
+Ridge and linear regression on very simple set of features:
+- Coalesced utmContent (mistakenly continuous)
+- time since first action to first buy
+- revenue in 7 days
+- revenue in 30 days
+
+simple score: 0.65
+ridge score: 0.65
+Apparently very good result considering my latest efforst and the fact that I'm regressing on continuous (!) utm hash
+
+ - model/dtr.py
+ - model/ridge_reduced.py
+ - model/simple_reduced.py
+
+Decision Trees regression and new version of linear and ridge regression. All of them on new datasets (normalized "time to buy" + a few new features):
+- as above (- utmContent)
+- normalized time to buy
+- views with pagetype "product"
+- views with pagetype "collection"
+- views with pagetype "category"
+
+Decision Trees regression score: 0.64
+simple score: 0.60 (note regression)
+ridge score: 0.65
+
+ - model/dtc.py
+
+Decision Trees classification (1st task). The same dataset as above.
+
+Decision Trees classification score: 1.00 (perfect)
+
+It looked unbelievably, I took more detailed look at results of classification:
+"""
+Predicted positive count: 36
+Predicted negative count: 122537
+Predicted truly positive count: 35
+Predicted truly negative count: 122506
+Predicted false positive count: 1
+Predicted false negative count: 31
+"""
+
+ - model/utm_sources.csv
+
+Auxilary file. Set of utmSources hashes used by tool to enable stream processing (single pass instead of two passes).
+
+- model/utm_extractor.cpp
+
+Tool used to translate utm tag hashes into bit vector (to "unpack" data sets). C++14
+
+ - model/dtr2.py
+ - model/ridge_reduced2.py
+
+Decision Trees and ridge regression on above data set extended by bit vector created from utmSource:
+- as above
+- utmSource tag extracted into bit vector (which means lot of features here)
+
+dtr2 score: 0.61
+ridge_reduced2 score: 0.59
+
+Which means unpacking utm tag is a kind of disaster for regression. Not necessary a surprise. Explosion of new features from only one "real" feature may outweigh other real features. Information is dense on only a few certain features and very sparse on most of them. Maybe I should have withdrawn from idea of "unpacking" features at this point. Staying on this path probably prevented me from improving above results much.
+
+ - model/elasticnet_reduced2.py
+ - model/lasso_reduced2.py
+
+Trying other models to improve results. ElasticNet and Lasso. Data sets as above.
+
+elasticnet_reduced2 score: 0.59
+lasso_reduced2 score: 0.59
+
+ - model/dtr3.py
+ - model/elasticnet_reduced3.py
+
+Decision Trees and ElasticNet on extended data sets. Increased resolution by computing revenue in each day since registration (instead of one cumulative result):
+- revenue in 1st day
+- revenue in 2nd day
+- revenue in 3rd day
+- revenue in 4th day
+- revenue in 5th day
+- revenue in 6th day
+- revenue in 7th day
+Trying the same on views data but free disk space was depleted at this point.
+
+dtr3 score: 0.61
+elasticnet_reduced3 score: 0.60
+
+ - model/dtr4.py
+ - model/elasticnet_reduced4.py
+
+Again Decision Trees and ElasticNet. Extended data sets by views in each day since registration:
+- views in 1st day
+- views in 2nd day
+- views in 3rd day
+- views in 4th day
+- views in 5th day
+- views in 6th day
+- views in 7th day
+
+dtr4 score: 0.61
+elasticnet_reduced4 score: 0.60
+
+ - scripts/data_normalization/conversions-signup-limits.sql
+
+First and last transaction time
+
+ - scripts/data_normalization/users-signup-limits.sql
+
+First and last registration time
+
+ - scripts/data_normalization/general-limits.sql
+
+Generates first and last timestamp of:
+- registration
+- view (approx action in service)
+- transaction
+
+Used for "heavy normalization" below.
+
+ - model/dtr5.py
+ - model/elasticnet_reduced5.py
+
+This time on sharply reduced data set. Taked into consideration only users registered after "full start" of log (after latest "min" date from above script) and before last half year of log (before first "max" date from above). From these users selected only users who payed at lest 500 during first half year since registration. Normalization resulted in very expensive query in database (first attempt was cancelled after a few hours, second attempt succeeded in lass than 2 hours). Result of this computation was a tiny set of ~8500 users. I expected this cheaty normalization to "inevitably" improve regression results by simplyfying the problem. I was wrong.
+
+dtr5 score: 0.22 - 0.65 varying from run to run
+elasticnet_reduced5 score: 0.61
+
+ - model/xgboost1.py
+
+Every step taken during feature design (or even domain manipulation) was ineffective in improving regression results. Using different models yielded only slight difference. I decided to try another tool - XGBoost.
+Tried two evaluation metrics: root mean square error and negative log-likelihood. Adjusting lambda parameter (and leaving alpha = 0) I was able to improve score by 0.005. As XGBoost doesn't have built in .score() method so I reimplemented it according to description from SciKit documentation. Used "4th" version of data sets as the last one was a kind of (ineffective) cheating.
+
+xgboost1 score: 0.60
+
+
+Conclusion
+==========
+
+After review of my whole process from the beginning it seems to me that the biggest obstacle was my attempt to use utm tags in regression. Introduction of one unpacked bit vector immediately decreased score of my regression and further attempts to improve it by _any_ mean was ineffective.
+Looking at this intuitively it is not necessary surprising. Explosion of features coming from only one real object makes "density" of information "not uniform" between different features. Maybe some kind of weight attached to each feature to keep "original" weight could help there (one "portion" of weight divided equaly between all features coming from one real object).
+
+In general Decision Trees seem to perform better on this data sets. Maybe because of its ability to "discard" less important features. On the other hand moving to "boosted" version of the tool didn't give noticeable difference.
+
+
+In general working on this project was very ineffective. I spent most of time working with database. Every single modification of some view triggers necessity to rebuild in average half of other views. Then I can make query and see if this makes useful results at all. Then proces repeats until I have reasonable data.
+Working with Python code kind of cherry on cake.
+
+And after initial installation of Prediction, it's code wasn't extended as a result of this project... kind of failure I would say.
+
+Nonetheless I learned a few interesting things about "predicting the future". It may have very interesting use cases. Last lecture was specially interesting - a few definitions of known probabilistic objects in English may be very usefull in effective communication using English language.
+
+Thanks
+
